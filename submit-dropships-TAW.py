@@ -1,6 +1,9 @@
 import requests
 import json
 import xml.etree.ElementTree as ET
+import datetime
+
+log_file = f"LOG-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
 
 taw_u = '***REMOVED***'
 taw_p = '***REMOVED***'
@@ -9,43 +12,16 @@ taw_url = '***REMOVED***'
 taw_headers = {
 	'Content-Type' : 'application/x-www-form-urlencoded',
 	}
-	
-taw_xml_pt1 = """<?xml version="1.0" ?>
-	<Order>
-		<PONumber>po***REMOVED***5</PONumber>
-		<ReqDate>12/27/19</ReqDate>
-		<ShipCode>UPG</ShipCode>
-		<ShipTo>				
-			<Name>Test Order</Name>		
-			<Address>2779 Ridgeline Dr</Address>	
-			<Address>Apt 108</Address>
-			<City>Corona</City>
-			<State>CA</State>
-			<Zip>90706</Zip>
-			<Country>US</Country>
-		</ShipTo>
-		<Part Number="RS5118">
-			<Qty>1</Qty>
-		</Part>
-		<Part Number="RS5116"> 
-			<Qty>2</Qty>
-		</Part>
-		<SpecialInstructions>SPECIAL INSTRUCTIONS!!</SpecialInstructions>
-		<Comment>COMMENTS!!</Comment>
-   </Order>
-"""
 
 ord_headers = {
-	'Authorization' : '***REMOVED***'
+	'Authorization' : '***REMOVED***',
+	'Content-Type' : 'application/json'
 }
 
 ord_url = '***REMOVED***'
 
-ord_tag_id_drop_ready = '30063'
+ord_tag_id_drop_ready = '30093'
 ord_tag_name_drop_ready = 'Dropship Ready'
-
-ord_tag_id_drop_sent = '30064'
-ord_tag_name_drop_sent = 'Dropship Sent'
 
 ord_tag_id_drop_failed = '30067'
 ord_tag_name_drop_failed = 'Dropship Request Failed'
@@ -53,21 +29,34 @@ ord_tag_name_drop_failed = 'Dropship Request Failed'
 ord_tag_id_await_tracking = '30068'
 ord_tag_name_await_tracking = 'Awaiting Tracking'
 
-### GET ALL DROPSHIP READY ORDERS FROM ORDORO ###
+
 ord_get_dropship_orders_params = {
 	'tag' : ord_tag_name_drop_ready
 }
+
+def log(str):
+	print(str, flush=True)
+	with open(log_file, 'a') as file:
+		file.write(f"{str}\n\r")
+
+		
+### GET ALL DROPSHIP READY ORDERS FROM ORDORO ###
+log(f"Requesting all orders with 'Dropship Ready' from ordoro...")
 
 r = requests.get(f"{ord_url}/order/", params=ord_get_dropship_orders_params, headers=ord_headers)
 robj = json.loads(r.content)
 
 ord_orders = robj['order']
 
+log(f"Found {len(ord_orders)} to process.\n\r\n\r")
 
 for eachOrder in ord_orders:
 	### PARSE ORDER INFO FROM ORDORO ###
 	parsed_order = {}
 	parsed_order['PONumber'] = eachOrder['order_id']
+	
+	log(f"Parsing {parsed_order['PONumber']}...")
+	
 	parsed_order['ReqDate'] = eachOrder['order_date'].split('T')[0]
 	parsed_order['ShipTo'] = {}
 	parsed_order['ShipTo']['Name'] = eachOrder['shipping_address']['name']
@@ -86,11 +75,10 @@ for eachOrder in ord_orders:
 		if(eachTag['text'] == 'Signature Required'):
 			parsed_order['SpecialInstructions'] = 'Signature Required'
 	
-	# {parsed_order['PONumber']}
 	### CONSTRUCT XML TO SEND TO TAW ###
 	xml_pt1 = f"""<?xml version='1.0' ?>
 	<Order>
-		<PONumber>fyz</PONumber>
+		<PONumber>{parsed_order['PONumber']}</PONumber>
 		<ReqDate>{parsed_order['ReqDate']}</ReqDate>
 		<ShipTo>				
 			<Name>{parsed_order['ShipTo']['Name']}</Name>		
@@ -118,35 +106,50 @@ for eachOrder in ord_orders:
 	xml_pt4 = "</Order>"	
 	full_xml = f"{xml_pt1}{xml_pt2}{xml_pt3}{xml_pt4}"
 	
+	log(f"Sending XML to TAW:\n\r{full_xml}")
+	
 	### SEND ORDER TO TAW ###
 	r = requests.post(f"{taw_url}/SubmitOrder", data=f"UserID={taw_u}&Password={taw_p}&OrderInfo={full_xml}", headers=taw_headers)
 	
 	status = ""
+	taw_order_id = ""
 	
 	try:
+		# PARSE XML RESPONSE FROM TAW
 		tree = ET.ElementTree(ET.fromstring(r.content))
 		root = tree.getroot()
 		status = root.find('Status').text
-	except:
-		status = r.content.decode('UTF-8')
-
-	### TAG ORDERS IN ORDORO AS DROPSHIP REQUESTED ###
-	if (status == "PASS"):
-		print(f"Order {parsed_order['PONumber']} submitted successfully.")
-		# DELETE DROPSHIP READY TAG
-		r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}/", headers=ord_headers)
 		
-		# ADD DROPSHIP SENT TAG
-		r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_await_tracking}/", headers=ord_headers)
-	else:
-		print(f"Order #{parsed_order['PONumber']} failed with error: {status}")
-		# DELETE DROPSHIP READY TAG
-		r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}/", headers=ord_headers)
+		if (status == "PASS"):
+			taw_order_id = root.find('Order').attrib['Id']
+			log(f"Order submitted successfully. Order ID: {taw_order_id}")
+			
+			# DELETE DROPSHIP READY TAG
+			log(f"Deleting 'Dropship Ready' tag...")
+			r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}/", headers=ord_headers)
+			
+			# ADD AWAITING TRACKING TAG
+			log(f"Adding 'Awaiting Tracking' tag...")
+			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_await_tracking}/", headers=ord_headers)
+			
+			# ADD COMMENT WITH TAW ORDER ID
+			log(f"Adding comment with TAW Order ID {taw_order_id}")
+			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/comment/", headers=ord_headers, data=json.dumps({'comment' : f'TAW_ORD_ID:{taw_order_id}'}))
+		else:
+			log(f"Status is not 'PASS': {status}")
+			
+			# DELETE DROPSHIP READY TAG
+			log(f"Deleting 'Dropship Ready' tag...")
+			r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}/", headers=ord_headers)
+
+			# ADD DROPSHIP FAILED TAG
+			log(f"Adding 'Dropship Failed' tag...")
+			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}/", headers=ord_headers)
+	except Exception as err:
+		log(f"Error parsing response. Exception:\n\r{err}\n\rLast Response:\n\r{r.content.decode('UTF-8')}")
 		
 		# ADD DROPSHIP FAILED TAG
+		log(f"Adding 'Dropship Failed' tag...")
 		r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}/", headers=ord_headers)
-	
-	
 
-
-
+	log("DONE!\n\r")
