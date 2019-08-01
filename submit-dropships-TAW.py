@@ -31,7 +31,8 @@ ord_tag_name_await_tracking = 'Awaiting Tracking'
 
 
 ord_get_dropship_orders_params = {
-	'tag' : ord_tag_name_drop_ready
+	'status' : 'dropshipment_requested',
+	'limit' : '100'
 }
 
 def log(str):
@@ -43,7 +44,7 @@ def log(str):
 ### GET ALL DROPSHIP READY ORDERS FROM ORDORO ###
 log(f"Requesting all orders with 'Dropship Ready' from ordoro...")
 
-r = requests.get(f"{ord_url}/order/", params=ord_get_dropship_orders_params, headers=ord_headers)
+r = requests.get(f"{ord_url}/order", params=ord_get_dropship_orders_params, headers=ord_headers)
 robj = json.loads(r.content)
 
 ord_orders = robj['order']
@@ -53,11 +54,11 @@ log(f"Found {len(ord_orders)} to process.\n\r\n\r")
 for eachOrder in ord_orders:
 	### PARSE ORDER INFO FROM ORDORO ###
 	parsed_order = {}
-	parsed_order['PONumber'] = eachOrder['order_id']
+	parsed_order['PONumber'] = eachOrder['order_number']
 	
 	log(f"Parsing {parsed_order['PONumber']}...")
 	
-	parsed_order['ReqDate'] = eachOrder['order_date'].split('T')[0]
+	parsed_order['ReqDate'] = eachOrder['order_placed_date'].split('T')[0]
 	parsed_order['ShipTo'] = {}
 	parsed_order['ShipTo']['Name'] = eachOrder['shipping_address']['name']
 	parsed_order['ShipTo']['Address1'] = eachOrder['shipping_address']['street1']
@@ -69,7 +70,7 @@ for eachOrder in ord_orders:
 	parsed_order['Parts'] = []
 	
 	for eachLine in eachOrder['lines']:
-		parsed_order['Parts'].append({'PartNo' : eachLine['product']['sku'], 'Qty' : eachLine['quantity']})
+		parsed_order['Parts'].append({'PartNo' : eachLine['sku'], 'Qty' : eachLine['quantity']})
 		
 	for eachTag in eachOrder['tags']:
 		if(eachTag['text'] == 'Signature Required'):
@@ -124,32 +125,24 @@ for eachOrder in ord_orders:
 			taw_order_id = root.find('Order').attrib['Id']
 			log(f"Order submitted successfully. Order ID: {taw_order_id}")
 			
-			# DELETE DROPSHIP READY TAG
-			log(f"Deleting 'Dropship Ready' tag...")
-			r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}/", headers=ord_headers)
-			
 			# ADD AWAITING TRACKING TAG
 			log(f"Adding 'Awaiting Tracking' tag...")
-			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_await_tracking}/", headers=ord_headers)
+			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_await_tracking}", headers=ord_headers)
 			
 			# ADD COMMENT WITH TAW ORDER ID
 			log(f"Adding comment with TAW Order ID {taw_order_id}")
-			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/comment/", headers=ord_headers, data=json.dumps({'comment' : f'TAW_ORD_ID:{taw_order_id}'}))
+			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/comment", headers=ord_headers, data=json.dumps({'comment' : f'TAW_ORD_ID:{taw_order_id}'}))
 		else:
 			log(f"Status is not 'PASS': {status}")
-			
-			# DELETE DROPSHIP READY TAG
-			log(f"Deleting 'Dropship Ready' tag...")
-			r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}/", headers=ord_headers)
 
 			# ADD DROPSHIP FAILED TAG
 			log(f"Adding 'Dropship Failed' tag...")
-			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}/", headers=ord_headers)
+			r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}", headers=ord_headers)
 	except Exception as err:
 		log(f"Error parsing response. Exception:\n\r{err}\n\rLast Response:\n\r{r.content.decode('UTF-8')}")
 		
 		# ADD DROPSHIP FAILED TAG
 		log(f"Adding 'Dropship Failed' tag...")
-		r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}/", headers=ord_headers)
+		r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}", headers=ord_headers)
 
 	log("DONE!\n\r")
