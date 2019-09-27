@@ -2,23 +2,25 @@ import requests
 import json
 import xml.etree.ElementTree as ET
 import datetime
+import config as cfg
 
 log_file = f"LOG-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
 
-taw_u = '***REMOVED***'
-taw_p = '***REMOVED***'
-taw_url = '***REMOVED***'
+taw_u = cfg.test_taw_username
+taw_p = cfg.test_taw_password
+taw_url = cfg.taw_url
 
 taw_headers = {
 	'Content-Type' : 'application/x-www-form-urlencoded',
 	}
 
 ord_headers = {
-	'Authorization' : '***REMOVED***',
+	'Authorization' : cfg.ord_auth,
 	'Content-Type' : 'application/json'
 }
 
-ord_url = '***REMOVED***'
+ord_url = cfg.ord_url
+ord_legacy_url = cfg.ord_legacy_url
 
 ord_tag_id_drop_ready = '30093'
 ord_tag_name_drop_ready = 'Dropship Ready'
@@ -31,9 +33,11 @@ ord_tag_name_await_tracking = 'Awaiting Tracking'
 
 
 ord_get_dropship_orders_params = {
-	'status' : 'dropshipment_requested',
+	'tag' : ord_tag_name_drop_ready,
 	'limit' : '100'
 }
+
+ord_supplier_taw_id = 44251
 
 def log(str):
 	print(str, flush=True)
@@ -58,7 +62,9 @@ for eachOrder in ord_orders:
 	
 	log(f"Parsing {parsed_order['PONumber']}...")
 	
-	parsed_order['ReqDate'] = eachOrder['order_placed_date'].split('T')[0]
+	parsed_order['ReqDate'] = eachOrder['order_placed_date']
+	log(f"Order Date: {parsed_order['ReqDate']}")
+	
 	parsed_order['ShipTo'] = {}
 	parsed_order['ShipTo']['Name'] = eachOrder['shipping_address']['name']
 	parsed_order['ShipTo']['Address1'] = eachOrder['shipping_address']['street1']
@@ -70,7 +76,21 @@ for eachOrder in ord_orders:
 	parsed_order['Parts'] = []
 	
 	for eachLine in eachOrder['lines']:
-		parsed_order['Parts'].append({'PartNo' : eachLine['sku'], 'Qty' : eachLine['quantity']})
+		# Get the ordoro SKU
+		ord_sku = eachLine['sku']
+		
+		# Get the product from ordoro
+		r = requests.get(f"{ord_legacy_url}/product/{ord_sku}/", headers=ord_headers)
+		rob = r.json()
+		
+		taw_sku = ''
+		
+		# Loop through suppliers until you find TAW
+		for eachSupplier in rob['suppliers']:
+			if (eachSupplier['id'] == ord_supplier_taw_id):
+				taw_sku = eachSupplier['supplier_sku']
+				
+		parsed_order['Parts'].append({'PartNo' : taw_sku, 'Qty' : eachLine['quantity']})
 		
 	for eachTag in eachOrder['tags']:
 		if(eachTag['text'] == 'Signature Required'):
@@ -144,5 +164,8 @@ for eachOrder in ord_orders:
 		# ADD DROPSHIP FAILED TAG
 		log(f"Adding 'Dropship Failed' tag...")
 		r = requests.post(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_failed}", headers=ord_headers)
+		
+	# REMOVE DROPSHIP READY TAG #
+	r = requests.delete(f"{ord_url}/order/{parsed_order['PONumber']}/tag/{ord_tag_id_drop_ready}", headers=ord_headers)
 
 	log("DONE!\n\r")
